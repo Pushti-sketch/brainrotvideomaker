@@ -1,43 +1,58 @@
 import streamlit as st
 import ffmpeg
-import numpy as np
-from PIL import Image
 import tempfile
 import os
-import shutil
-from io import BytesIO
 
-# --- Default Files (Relative paths for GitHub deployment) ---
+# --- Default Files ---
 DEFAULT_BACKGROUND_MUSIC = "default_bg_music.mp3"
 DEFAULT_OVERLAY_VIDEO = "greenscreen_overlay.mp4"
 
-def apply_chroma_key(input_video_path, overlay_video_path, output_video_path, color_to_remove=(0, 255, 0), tolerance=100):
-    """Applies chroma keying to overlay a video onto another."""
+# Function to get audio duration
+def get_audio_duration(audio_path):
     try:
-        # Construct the ffmpeg filter for chroma keying
-        chroma_filter = f"[1:v]chromakey={color_to_remove[0]}:{color_to_remove[1]}:{color_to_remove[2]}:{tolerance/255.0}[ckout];"
-        overlay_filter = f"[0:v][ckout]overlay=shortest=1[out]"
+        probe = ffmpeg.probe(audio_path)
+        return float(probe['format']['duration'])
+    except Exception as e:
+        st.error(f"Could not determine audio duration: {e}")
+        return 0
 
-        # Run ffmpeg to apply chroma key and overlay
-        ffmpeg.input(input_video_path).input(overlay_video_path).output(output_video_path, vcodec='libx264', acodec='aac', filter_complex=chroma_filter + overlay_filter).run(overwrite_output=True)
-        return output_video_path
-    except ffmpeg.Error as e:
-        st.error(f"FFmpeg error: {e.stderr.decode()}")
-        return None
-
-def combine_audio_video(audio_path, video_path, output_path):
-    """Combines audio and video into a single file."""
+# Function to apply chroma key (green screen)
+def apply_chroma_key(base_video_path, overlay_video_path, output_path, color_to_remove=(0, 255, 0), similarity=0.1):
     try:
-        ffmpeg.input(video_path).input(audio_path).output(output_path, vcodec='libx264', acodec='aac').run(overwrite_output=True)
+        ffmpeg.input(base_video_path).input(overlay_video_path).output(
+            output_path,
+            vcodec='libx264',
+            acodec='aac',
+            filter_complex=(
+                f"[1:v]chromakey=0x{color_to_remove[0]:02x}{color_to_remove[1]:02x}{color_to_remove[2]:02x}:{similarity}[ckout];"
+                f"[0:v][ckout]overlay=shortest=1[outv]"
+            ),
+            map="[outv]",
+            shortest=None,
+        ).run(overwrite_output=True)
         return output_path
     except ffmpeg.Error as e:
-        st.error(f"FFmpeg error: {e.stderr.decode()}")
+        st.error(f"FFmpeg chroma key error: {e.stderr.decode()}")
         return None
 
-def process_media(audio_file, image_file):
-    """Processes the uploaded audio and image to create a video."""
+# Function to combine audio and video
+def combine_audio_video(audio_path, video_path, output_path):
     try:
-        # Save the uploaded files to temporary locations
+        ffmpeg.input(video_path).input(audio_path).output(
+            output_path,
+            vcodec='libx264',
+            acodec='aac',
+            strict='experimental'
+        ).run(overwrite_output=True)
+        return output_path
+    except ffmpeg.Error as e:
+        st.error(f"FFmpeg combine error: {e.stderr.decode()}")
+        return None
+
+# Main processing function
+def process_media(audio_file, image_file):
+    try:
+        # Save uploaded files
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_audio:
             tmp_audio.write(audio_file.read())
             audio_path = tmp_audio.name
@@ -46,48 +61,60 @@ def process_media(audio_file, image_file):
             tmp_image.write(image_file.read())
             image_path = tmp_image.name
 
-        # Create a temporary video from the image
-        video_path = "temp_video.mp4"
-        ffmpeg.input('anullsrc=r=30:cl=stereo', f='lavfi', t=audio_file.duration).output(video_path, vcodec='libx264', acodec='aac', pix_fmt='yuv420p').run(overwrite_output=True)
+        duration = get_audio_duration(audio_path)
+        if duration <= 0:
+            st.error("Audio duration is invalid.")
+            return None
 
-        # Apply chroma keying to overlay the image onto the video
-        final_video_path = "final_video.mp4"
-        apply_chroma_key(video_path, image_path, final_video_path)
+        # Step 1: Turn image into a video for the length of the audio
+        temp_video_path = os.path.join(tempfile.gettempdir(), "image_video.mp4")
+        ffmpeg.input(image_path, loop=1, t=duration).output(
+            temp_video_path, vcodec='libx264', pix_fmt='yuv420p', r=24
+        ).run(overwrite_output=True)
 
-        # Combine the final video with the audio
-        final_output_path = "final_output.mp4"
-        combine_audio_video(audio_path, final_video_path, final_output_path)
+        # Step 2: Overlay greenscreen video onto the image video
+        overlay_applied_path = os.path.join(tempfile.gettempdir(), "overlay_applied.mp4")
+        apply_chroma_key(temp_video_path, DEFAULT_OVERLAY_VIDEO, overlay_applied_path)
 
-        # Clean up temporary files
+        # Step 3: Combine with original audio
+        final_output_path = os.path.join(tempfile.gettempdir(), "final_output.mp4")
+        combine_audio_video(audio_path, overlay_applied_path, final_output_path)
+
+        # Cleanup
         os.remove(audio_path)
         os.remove(image_path)
-        os.remove(video_path)
-        os.remove(final_video_path)
+        os.remove(temp_video_path)
+        os.remove(overlay_applied_path)
 
         return final_output_path
+
     except Exception as e:
         st.error(f"An error occurred: {e}")
         return None
 
-# Streamlit app interface
-st.title("Media Fusion Studio")
-st.write("Upload your audio and image to create a combined video with background music and a greenscreen overlay.")
+# Streamlit interface
+st.title("🎬 Media Fusion Studio")
+st.write("Upload your audio and image to create a custom video with background visuals and greenscreen overlay.")
 
 uploaded_audio = st.file_uploader("Upload your audio file (MP3, WAV, etc.)", type=["mp3", "wav", "aac", "ogg"])
 uploaded_image = st.file_uploader("Upload your image file (PNG, JPG, etc.)", type=["png", "jpg", "jpeg"])
 
 if uploaded_audio and uploaded_image:
-    st.info("Processing your media...")
-    final_video_path = process_media(uploaded_audio, uploaded_image)
+    st.info("Processing your media... please wait ⏳")
+    result_video = process_media(uploaded_audio, uploaded_image)
 
-    if final_video_path:
-        with open(final_video_path, "rb") as f:
+    if result_video:
+        with open(result_video, "rb") as f:
             st.download_button(
-                label="Download Final Video",
+                label="⬇️ Download Final Video",
                 data=f.read(),
                 file_name="final_video.mp4",
                 mime="video/mp4",
             )
+        os.remove(result_video)
+    else:
+        st.error("Failed to process the media. Please check your files and try again.")
 
-        # Clean up the final video file
-        os.remove(final_video_path)
+st.sidebar.header("ℹ️ Default Files Info")
+st.sidebar.info(f"Default Background Music: `{DEFAULT_BACKGROUND_MUSIC}`\n(Default music not yet used)")
+st.sidebar.info(f"Greenscreen Overlay: `{DEFAULT_OVERLAY_VIDEO}` (must be present in the same directory)")
