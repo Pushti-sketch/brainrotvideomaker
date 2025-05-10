@@ -2,16 +2,30 @@ import streamlit as st
 import ffmpeg
 import tempfile
 import os
-from pydub import AudioSegment
+from mutagen.mp3 import MP3
+from mutagen.wave import WAVE
+from mutagen.aac import AAC
+from mutagen.oggvorbis import OggVorbis
 
 # --- Default Files ---
 DEFAULT_OVERLAY_VIDEO = "greenscreen_overlay.mp4"
 
-# Get audio duration using pydub (FFmpeg not needed here)
+# Get audio duration using mutagen (pure Python)
 def get_audio_duration(audio_path):
     try:
-        audio = AudioSegment.from_file(audio_path)
-        return len(audio) / 1000  # Duration in seconds
+        ext = os.path.splitext(audio_path)[1].lower()
+        if ext == ".mp3":
+            audio = MP3(audio_path)
+        elif ext == ".wav":
+            audio = WAVE(audio_path)
+        elif ext == ".aac":
+            audio = AAC(audio_path)
+        elif ext == ".ogg":
+            audio = OggVorbis(audio_path)
+        else:
+            st.error(f"Unsupported audio format: {ext}")
+            return 0
+        return audio.info.length
     except Exception as e:
         st.error(f"Could not determine audio duration: {e}")
         return 0
@@ -54,11 +68,11 @@ def combine_audio_video(audio_path, video_path, output_path):
 def process_media(audio_file, image_file):
     try:
         # Save uploaded files
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_audio:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(audio_file.name)[1]) as tmp_audio:
             tmp_audio.write(audio_file.read())
             audio_path = tmp_audio.name
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_image:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(image_file.name)[1]) as tmp_image:
             tmp_image.write(image_file.read())
             image_path = tmp_image.name
 
@@ -98,7 +112,7 @@ def process_media(audio_file, image_file):
 st.title("🎬 Media Fusion Studio")
 st.write("Upload your audio and image to create a video with a greenscreen overlay!")
 
-uploaded_audio = st.file_uploader("Upload your audio file (MP3, WAV, etc.)", type=["mp3", "wav", "aac", "ogg"])
+uploaded_audio = st.file_uploader("Upload your audio file (MP3, WAV, AAC, OGG)", type=["mp3", "wav", "aac", "ogg"])
 uploaded_image = st.file_uploader("Upload your image file (PNG, JPG, etc.)", type=["png", "jpg", "jpeg"])
 
 if uploaded_audio and uploaded_image:
