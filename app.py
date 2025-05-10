@@ -1,18 +1,19 @@
 import streamlit as st
-import ffmpeg
 import tempfile
 import os
-from mutagen.mp3 import MP3
-from mutagen.wave import WAVE
-from mutagen.aac import AAC
-from mutagen.oggvorbis import OggVorbis
+from moviepy.editor import VideoFileClip, AudioFileClip, ImageClip, CompositeVideoClip
 
 # --- Default Files ---
-DEFAULT_OVERLAY_VIDEO = "greenscreen_overlay.mp4"
+DEFAULT_OVERLAY_VIDEO = "greenscreen_overlay.mp4"  # Pre-generated video
 
 # Get audio duration using mutagen (pure Python)
 def get_audio_duration(audio_path):
     try:
+        from mutagen.mp3 import MP3
+        from mutagen.wave import WAVE
+        from mutagen.aac import AAC
+        from mutagen.oggvorbis import OggVorbis
+
         ext = os.path.splitext(audio_path)[1].lower()
         if ext == ".mp3":
             audio = MP3(audio_path)
@@ -30,41 +31,7 @@ def get_audio_duration(audio_path):
         st.error(f"Could not determine audio duration: {e}")
         return 0
 
-# Apply chroma key using ffmpeg
-def apply_chroma_key(base_video_path, overlay_video_path, output_path, color_to_remove=(0, 255, 0), similarity=0.1):
-    try:
-        chroma_color = f"0x{color_to_remove[0]:02x}{color_to_remove[1]:02x}{color_to_remove[2]:02x}"
-        ffmpeg.input(base_video_path).input(overlay_video_path).output(
-            output_path,
-            vcodec='libx264',
-            acodec='aac',
-            filter_complex=(
-                f"[1:v]chromakey={chroma_color}:{similarity}[ckout];"
-                f"[0:v][ckout]overlay=shortest=1[outv]"
-            ),
-            map="[outv]",
-            shortest=None
-        ).run(overwrite_output=True)
-        return output_path
-    except ffmpeg.Error as e:
-        st.error(f"FFmpeg chroma key error: {e.stderr.decode()}")
-        return None
-
-# Combine audio with video
-def combine_audio_video(audio_path, video_path, output_path):
-    try:
-        ffmpeg.input(video_path).input(audio_path).output(
-            output_path,
-            vcodec='libx264',
-            acodec='aac',
-            strict='experimental'
-        ).run(overwrite_output=True)
-        return output_path
-    except ffmpeg.Error as e:
-        st.error(f"FFmpeg combine error: {e.stderr.decode()}")
-        return None
-
-# Main processing logic
+# Process media and create final video
 def process_media(audio_file, image_file):
     try:
         # Save uploaded files
@@ -82,25 +49,28 @@ def process_media(audio_file, image_file):
             st.error("Audio duration is invalid.")
             return None
 
-        # Step 1: Turn image into video
-        image_video_path = os.path.join(tempfile.gettempdir(), "image_video.mp4")
-        ffmpeg.input(image_path, loop=1, t=duration).output(
-            image_video_path, vcodec='libx264', pix_fmt='yuv420p', r=24
-        ).run(overwrite_output=True)
+        # Load video and prepare overlay
+        overlay_clip = VideoFileClip(DEFAULT_OVERLAY_VIDEO)
+        overlay_clip_resized = overlay_clip.resize(width=1280)  # Adjust size to fit the image
+        overlay_clip_resized = overlay_clip_resized.set_duration(duration)  # Match duration to the audio
 
-        # Step 2: Overlay greenscreen video
-        overlay_path = os.path.join(tempfile.gettempdir(), "overlay_video.mp4")
-        apply_chroma_key(image_video_path, DEFAULT_OVERLAY_VIDEO, overlay_path)
+        # Load the image
+        image_clip = ImageClip(image_path).set_duration(duration).resize(height=720).set_position('center')
 
-        # Step 3: Combine with audio
+        # Combine image and overlay video
+        final_video = CompositeVideoClip([image_clip, overlay_clip_resized])
+
+        # Add audio
+        audio = AudioFileClip(audio_path).subclip(0, duration)  # Trim audio to match video
+        final_video = final_video.set_audio(audio)
+
+        # Save the final video
         final_output_path = os.path.join(tempfile.gettempdir(), "final_output.mp4")
-        combine_audio_video(audio_path, overlay_path, final_output_path)
+        final_video.write_videofile(final_output_path, codec="libx264", audio_codec="aac", fps=24)
 
         # Cleanup
         os.remove(audio_path)
         os.remove(image_path)
-        os.remove(image_video_path)
-        os.remove(overlay_path)
 
         return final_output_path
 
