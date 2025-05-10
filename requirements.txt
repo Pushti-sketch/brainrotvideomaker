@@ -2,6 +2,7 @@ pydub
 moviepy
 streamlit
 numpy
+mutagen
 imageio
 ffmpeg-python  
 Pillow
