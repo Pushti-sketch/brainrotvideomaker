@@ -1,4 +1,6 @@
 moviepy
 streamlit
 numpy
+imageio
+ffmpeg-python  
 Pillow
